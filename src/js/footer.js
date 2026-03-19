@@ -34,6 +34,7 @@ const footerHTML = `
                 <li><a href="equipo.html" style="color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 0.8rem;">Nuestro Equipo</a></li>
                 <li><a href="casos-exito.html" style="color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 0.8rem;">Casos de Éxito</a></li>
                 <li><a href="blog.html" style="color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 0.8rem;">Blog & Noticias</a></li>
+                <li><a href="dashboard.html" style="color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 0.8rem;">Portal Interno (CRM)</a></li>
                 <li><a href="#" style="color: var(--text-secondary); text-decoration: none; display: block; margin-bottom: 0.8rem;">Contacto</a></li>
             </ul>
         </div>
