@@ -152,6 +152,68 @@ body {
   grid-template-columns: 1.6fr 1fr 1.2fr;
 }
 
+.quick-settings {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(214, 239, 232, 0.35), rgba(255, 255, 255, 0.92));
+}
+
+.quick-settings h3 {
+  margin: 0;
+  font-family: "Sora", sans-serif;
+  font-size: 1rem;
+}
+
+.quick-settings p {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1.2fr repeat(3, minmax(160px, 1fr));
+  gap: 0.65rem;
+  align-items: end;
+}
+
+.settings-grid label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 700;
+}
+
+.toggle-item {
+  min-height: 100%;
+  align-content: center;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.toggle-item input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.reminder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+}
+
+.reminder-chip {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
 input,
 select,
 textarea {
@@ -200,6 +262,12 @@ textarea {
 .task-item.is-completed {
   opacity: 0.68;
   background: #f1f7f4;
+}
+
+.task-item.is-trashed {
+  opacity: 0.9;
+  background: #f7f7fb;
+  border-style: dashed;
 }
 
 .task-title {
@@ -305,10 +373,49 @@ fieldset {
   gap: 0.5rem;
 }
 
+.toolbar-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.trash-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.trash-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.trash-panel-header h3 {
+  margin: 0;
+  font-family: "Sora", sans-serif;
+}
+
+.trash-panel-header p {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+}
+
+.trash-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .alert-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
+}
+
+.alert-item small {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--ink-soft);
 }
 
 @keyframes reveal {
@@ -325,6 +432,10 @@ fieldset {
 @media (max-width: 960px) {
   .filters-row,
   .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -348,13 +459,17 @@ fieldset {
 
 .calendar-toolbar {
   display: grid;
-  grid-template-columns: 1.2fr 1.5fr 220px;
+  grid-template-columns: 1.2fr 1.5fr minmax(360px, 1fr);
   gap: 0.6rem;
   align-items: center;
 }
 
 .range-label {
   margin: 0;
+  margin-left: 0.2rem;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
   color: var(--ink-soft);
   font-weight: 700;
   text-transform: capitalize;
@@ -369,15 +484,32 @@ fieldset {
 .month-picker {
   display: flex;
   gap: 0.45rem;
-  align-items: center;
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
 
 .month-picker select {
-  min-height: 40px;
+  min-height: 44px;
   border-radius: 10px;
   border: 1px solid var(--line);
-  padding: 0.45rem 0.6rem;
+  padding: 0.5rem 0.7rem;
   background: #fff;
+  font-size: 0.98rem;
+  min-width: 140px;
+}
+
+.picker-field {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 140px;
+}
+
+.picker-field span {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .calendar-layout {
@@ -411,6 +543,10 @@ fieldset {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 0.3rem;
+}
+
+.mini-day-placeholder {
+  min-height: 44px;
 }
 
 .mini-day {
@@ -511,6 +647,10 @@ fieldset {
   cursor: pointer;
   animation: cellReveal 260ms ease both;
   animation-delay: var(--stagger-delay, 0ms);
+}
+
+.calendar-cell-placeholder {
+  min-height: 124px;
 }
 
 .calendar-cell.stagger-0 { --stagger-delay: 0ms; }
@@ -740,6 +880,11 @@ fieldset {
   .calendar-toolbar {
     grid-template-columns: 1fr;
   }
+
+  .month-picker {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 980px) {
@@ -753,6 +898,22 @@ fieldset {
 }
 
 @media (max-width: 700px) {
+  .month-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+  }
+
+  .month-picker .btn {
+    grid-column: 1 / -1;
+  }
+
+  .picker-field,
+  .month-picker select {
+    min-width: 0;
+    width: 100%;
+  }
+
   .calendar-cell {
     min-height: 95px;
   }

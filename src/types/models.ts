@@ -12,11 +12,14 @@ export interface TaskItem {
   description: string;
   startAt: string;
   endAt: string;
+  reminderMinutes: number[];
   status: TaskStatus;
   assigneeIds: string[];
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  deletedAt?: number | null;
+  deletedBy?: string | null;
   completedAt?: number;
 }
 
@@ -25,6 +28,7 @@ export interface TaskDraft {
   description: string;
   startAt: string;
   endAt: string;
+  reminderMinutes: number[];
   assigneeIds: string[];
 }
 

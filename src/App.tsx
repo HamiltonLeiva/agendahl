@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import dayjs, { Dayjs } from "dayjs";
 import "dayjs/locale/es";
 import { useAuth } from "./hooks/useAuth";
@@ -24,6 +24,8 @@ const TaskForm = lazy(() =>
 dayjs.locale("es");
 
 const MINI_WEEK_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+const ALERT_PREFS_KEY = "agenda-alert-preferences";
+const TRASH_RETENTION_DAYS = 30;
 const MONTH_OPTIONS = [
   "Enero",
   "Febrero",
@@ -39,9 +41,14 @@ const MONTH_OPTIONS = [
   "Diciembre",
 ];
 
+function getMondayBasedWeekdayIndex(day: Dayjs) {
+  return (day.day() + 6) % 7;
+}
+
 function buildMiniCalendarDays(cursorDate: Dayjs) {
-  const first = cursorDate.startOf("month").startOf("week").add(1, "day");
-  return Array.from({ length: 42 }, (_, index) => first.add(index, "day"));
+  const monthStart = cursorDate.startOf("month");
+  const daysInMonth = monthStart.daysInMonth();
+  return Array.from({ length: daysInMonth }, (_, index) => monthStart.add(index, "day"));
 }
 
 function moveCursor(current: Dayjs, view: CalendarView, direction: -1 | 1) {
@@ -55,9 +62,50 @@ function getRangeLabel(view: CalendarView, cursorDate: Dayjs) {
   if (view === "day") return cursorDate.format("dddd, DD [de] MMMM [de] YYYY");
   if (view === "month") return cursorDate.format("MMMM [de] YYYY");
 
-  const start = cursorDate.startOf("week").add(1, "day");
+  const start = cursorDate.startOf("week");
   const end = start.add(view === "week" ? 6 : 13, "day");
   return `${start.format("DD MMM")} - ${end.format("DD MMM YYYY")}`;
+}
+
+interface AlertPreferences {
+  defaultReminderMinutes: number;
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+  notificationsEnabled: boolean;
+}
+
+function loadAlertPreferences(): AlertPreferences {
+  const fallback: AlertPreferences = {
+    defaultReminderMinutes: 5,
+    soundEnabled: true,
+    vibrationEnabled: true,
+    notificationsEnabled: true,
+  };
+
+  const saved = localStorage.getItem(ALERT_PREFS_KEY);
+  if (!saved) return fallback;
+
+  try {
+    const parsed = JSON.parse(saved) as Partial<AlertPreferences>;
+
+    return {
+      defaultReminderMinutes: Number(parsed.defaultReminderMinutes ?? fallback.defaultReminderMinutes),
+      soundEnabled: Boolean(parsed.soundEnabled ?? fallback.soundEnabled),
+      vibrationEnabled: Boolean(parsed.vibrationEnabled ?? fallback.vibrationEnabled),
+      notificationsEnabled: Boolean(parsed.notificationsEnabled ?? fallback.notificationsEnabled),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function escapeExcelHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function App() {
@@ -71,6 +119,8 @@ function App() {
     updateTask,
     toggleTask,
     removeTask,
+    restoreTask,
+    purgeTask,
   } = useTasks(user?.uid ?? null);
 
   const [activeTab, setActiveTab] = useState<"agenda" | "reportes">("agenda");
@@ -80,11 +130,18 @@ function App() {
   const [selectedDate, setSelectedDate] = useState(dayjs());
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<TaskItem | undefined>(undefined);
+  const [alertPreferences, setAlertPreferences] = useState<AlertPreferences>(() => loadAlertPreferences());
+  const [showTrash, setShowTrash] = useState(false);
+  const autoPurgingTrashRef = useRef(false);
   const [filters, setFilters] = useState<TaskFilters>({
     query: "",
     status: "all",
     assigneeId: "all",
   });
+
+  useEffect(() => {
+    localStorage.setItem(ALERT_PREFS_KEY, JSON.stringify(alertPreferences));
+  }, [alertPreferences]);
 
   const usersById = useMemo(
     () => new Map(users.map((person) => [person.id, person])),
@@ -93,6 +150,7 @@ function App() {
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
+      if (task.deletedAt) return false;
       const byStatus = filters.status === "all" ? true : task.status === filters.status;
       const byAssignee =
         filters.assigneeId === "all" ? true : task.assigneeIds.includes(filters.assigneeId);
@@ -105,6 +163,14 @@ function App() {
   }, [filters, tasks]);
 
   const miniDays = useMemo(() => buildMiniCalendarDays(cursorDate), [cursorDate]);
+  const miniLeadingBlanks = useMemo(
+    () => getMondayBasedWeekdayIndex(cursorDate.startOf("month")),
+    [cursorDate],
+  );
+  const miniTrailingBlanks = useMemo(() => {
+    const usedCells = miniLeadingBlanks + miniDays.length;
+    return (7 - (usedCells % 7)) % 7;
+  }, [miniLeadingBlanks, miniDays.length]);
 
   const yearOptions = useMemo(() => {
     const year = cursorDate.year();
@@ -119,10 +185,26 @@ function App() {
     }, {});
   }, [filteredTasks]);
 
+  const activeTasks = useMemo(() => tasks.filter((task) => !task.deletedAt), [tasks]);
+  const trashedTasks = useMemo(
+    () => tasks.filter((task) => Boolean(task.deletedAt)).sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0)),
+    [tasks],
+  );
+
   const rangeLabel = useMemo(() => getRangeLabel(calendarView, cursorDate), [calendarView, cursorDate]);
   const viewTransitionKey = `${calendarView}-${cursorDate.format("YYYY-MM-DD")}-${density}`;
+  const monthlyTasksForExport = useMemo(() => {
+    return activeTasks
+      .filter((task) => dayjs(task.startAt).isSame(cursorDate, "month"))
+      .slice()
+      .sort((left, right) => dayjs(left.startAt).valueOf() - dayjs(right.startAt).valueOf());
+  }, [activeTasks, cursorDate]);
 
-  const { alertMessages, pendingAlerts, dismissAlert, requestPermission } = useTaskAlerts(tasks);
+  const { alertMessages, pendingAlerts, dismissAlert, requestPermission } = useTaskAlerts(activeTasks, {
+    soundEnabled: alertPreferences.soundEnabled,
+    vibrationEnabled: alertPreferences.vibrationEnabled,
+    notificationsEnabled: alertPreferences.notificationsEnabled,
+  });
 
   const handleTaskSave = async (draft: TaskDraft) => {
     if (!user) return;
@@ -136,6 +218,191 @@ function App() {
     setIsFormOpen(false);
     setSelectedTask(undefined);
   };
+
+  const handleTrashRestore = async (task: TaskItem) => {
+    await restoreTask(task.id);
+    setShowTrash(true);
+  };
+
+  const handleTrashPurge = async (task: TaskItem) => {
+    await purgeTask(task.id);
+  };
+
+  const handleMonthlyExcelExport = () => {
+    if (!monthlyTasksForExport.length) {
+      window.alert("No hay actividades en el mes seleccionado para exportar.");
+      return;
+    }
+
+    const monthStart = cursorDate.startOf("month");
+    const daysInMonth = monthStart.daysInMonth();
+    const leadingBlankDays = getMondayBasedWeekdayIndex(monthStart);
+    const totalCells = leadingBlankDays + daysInMonth;
+    const trailingBlankDays = (7 - (totalCells % 7)) % 7;
+
+    const calendarDays = [
+      ...Array.from({ length: leadingBlankDays }, () => null),
+      ...Array.from({ length: daysInMonth }, (_, index) => monthStart.add(index, "day")),
+      ...Array.from({ length: trailingBlankDays }, () => null),
+    ];
+
+    const tasksByDate = monthlyTasksForExport.reduce<Record<string, TaskItem[]>>((acc, task) => {
+      const key = dayjs(task.startAt).format("YYYY-MM-DD");
+      acc[key] = acc[key] ?? [];
+      acc[key].push(task);
+      return acc;
+    }, {});
+
+    Object.values(tasksByDate).forEach((dayTasks) => {
+      dayTasks.sort((left, right) => dayjs(left.startAt).valueOf() - dayjs(right.startAt).valueOf());
+    });
+
+    const weekRowsHtml = [] as string[];
+    for (let index = 0; index < calendarDays.length; index += 7) {
+      const weekDays = calendarDays.slice(index, index + 7);
+
+      const dateRow = weekDays
+        .map((date) => {
+          if (!date) return '<td class="date-cell muted"></td>';
+          return `<td class="date-cell">${date.format("DD")}</td>`;
+        })
+        .join("");
+
+      const tasksRow = weekDays
+        .map((date) => {
+          if (!date) return '<td class="tasks-cell muted"></td>';
+
+          const key = date.format("YYYY-MM-DD");
+          const dayTasks = tasksByDate[key] ?? [];
+
+          if (!dayTasks.length) {
+            return '<td class="tasks-cell"></td>';
+          }
+
+          const taskHtml = dayTasks
+            .map((task) => {
+              const start = dayjs(task.startAt).format("HH:mm");
+              const status = task.status === "completed" ? "[OK]" : "[PEND]";
+              return `<div class="task-line">${escapeExcelHtml(`${start} ${status} ${task.title}`)}</div>`;
+            })
+            .join("");
+
+          return `<td class="tasks-cell">${taskHtml}</td>`;
+        })
+        .join("");
+
+      weekRowsHtml.push(`<tr>${dateRow}</tr><tr>${tasksRow}</tr>`);
+    }
+
+    const planningHtml = `
+      <table class="planner-table">
+        <tr>
+          <th>LUNES</th>
+          <th>MARTES</th>
+          <th>MIERCOLES</th>
+          <th>JUEVES</th>
+          <th>VIERNES</th>
+          <th>SABADO</th>
+          <th>DOMINGO</th>
+        </tr>
+        ${weekRowsHtml.join("")}
+      </table>
+    `;
+
+    const summary = {
+      mes: cursorDate.format("MMMM YYYY"),
+      total: monthlyTasksForExport.length,
+      pendientes: monthlyTasksForExport.filter((task) => task.status === "pending").length,
+      completadas: monthlyTasksForExport.filter((task) => task.status === "completed").length,
+      generado: dayjs().format("DD/MM/YYYY HH:mm"),
+    };
+
+    const htmlDocument = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+          <meta charset="UTF-8" />
+          <style>
+            body { font-family: Calibri, Arial, sans-serif; }
+            h2, h3 { margin: 4px 0; text-align: center; }
+            .month-title { text-transform: uppercase; text-align: center; margin: 6px 0 10px; }
+            .meta { margin: 0 0 12px; text-align: center; font-size: 12px; }
+            table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+            .planner-table th,
+            .planner-table td { border: 1px solid #111; }
+            .planner-table th {
+              font-size: 11px;
+              font-weight: 700;
+              padding: 4px;
+              text-align: center;
+              background: #f2f2f2;
+            }
+            .date-cell {
+              height: 18px;
+              font-size: 11px;
+              font-weight: 700;
+              text-align: left;
+              vertical-align: middle;
+              padding: 1px 4px;
+            }
+            .tasks-cell {
+              height: 82px;
+              vertical-align: top;
+              padding: 4px;
+              font-size: 10px;
+              line-height: 1.25;
+            }
+            .task-line {
+              margin-bottom: 3px;
+              white-space: normal;
+              word-break: break-word;
+            }
+            .muted { background: #fafafa; }
+          </style>
+        </head>
+        <body>
+          <h2>VIDRIERIA SALEM</h2>
+          <h3>PLANIFICACION MENSUAL</h3>
+          <div class="month-title">MES: ${escapeExcelHtml(cursorDate.format("MMMM YYYY"))}</div>
+          <p class="meta">Total: ${summary.total} | Pendientes: ${summary.pendientes} | Completadas: ${summary.completadas} | Generado: ${escapeExcelHtml(summary.generado)}</p>
+          ${planningHtml}
+        </body>
+      </html>
+    `;
+
+    const filename = `planificacion-${cursorDate.format("YYYY-MM")}.xls`;
+    const fileBlob = new Blob([`\uFEFF${htmlDocument}`], {
+      type: "application/vnd.ms-excel;charset=utf-8;",
+    });
+    const fileUrl = URL.createObjectURL(fileBlob);
+    const link = document.createElement("a");
+    link.href = fileUrl;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(fileUrl);
+  };
+
+  useEffect(() => {
+    if (autoPurgingTrashRef.current) return;
+    if (!trashedTasks.length) return;
+
+    const now = Date.now();
+    const maxAgeMs = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const expiredTaskIds = trashedTasks
+      .filter((task) => task.deletedAt && now - task.deletedAt >= maxAgeMs)
+      .map((task) => task.id);
+
+    if (!expiredTaskIds.length) return;
+
+    autoPurgingTrashRef.current = true;
+
+    Promise.all(expiredTaskIds.map((taskId) => purgeTask(taskId)))
+      .catch(() => {
+        // Ignore transient cleanup failures and retry on next state update.
+      })
+      .finally(() => {
+        autoPurgingTrashRef.current = false;
+      });
+  }, [purgeTask, trashedTasks]);
 
   const moveTaskToDate = async (taskId: string, targetDate: Dayjs) => {
     const task = tasks.find((entry) => entry.id === taskId);
@@ -156,6 +423,7 @@ function App() {
       description: task.description,
       startAt: nextStart.toISOString(),
       endAt: nextEnd.toISOString(),
+      reminderMinutes: task.reminderMinutes,
       assigneeIds: task.assigneeIds,
     });
 
@@ -179,6 +447,7 @@ function App() {
       description: task.description,
       startAt: nextStart.toISOString(),
       endAt: nextEnd.toISOString(),
+      reminderMinutes: task.reminderMinutes,
       assigneeIds: task.assigneeIds,
     });
 
@@ -196,10 +465,9 @@ function App() {
     return (
       <main className="app-shell auth-screen">
         <section className="card hero">
-          <h1>Agenda Multiusuario Inteligente</h1>
+          <h1>Vidrería Salem</h1>
           <p>
-            Gestiona tareas compartidas, responsables, alertas y reportes en tiempo real.
-            Funciona online y offline desde movil, tablet, laptop o smart TV.
+            Planificación de actividades.
           </p>
           <button className="btn" onClick={() => login()}>
             Ingresar con Google
@@ -213,7 +481,8 @@ function App() {
     <main className="app-shell">
       <header className="topbar card">
         <div>
-          <h1>Agenda Compartida</h1>
+          <h1>Vidriería Salem</h1>
+          <h2>Planificación de actividades</h2>
           <p>
             {navigator.onLine ? "Conectado" : "Sin conexion"} · {users.length} usuarios activos
           </p>
@@ -258,6 +527,11 @@ function App() {
                 <p>
                   {alert.title} inicia a las {alert.startsAt}
                 </p>
+                <small>
+                  {alert.reminderMinutes === 0
+                    ? "Aviso al iniciar"
+                    : `Aviso ${alert.reminderMinutes} min antes`}
+                </small>
               </div>
               <button className="btn tiny ghost" onClick={() => dismissAlert(alert.id)}>
                 Cerrar
@@ -347,37 +621,43 @@ function App() {
             </div>
 
             <div className="month-picker">
-              <select
-                aria-label="Seleccionar mes"
-                value={cursorDate.month()}
-                onChange={(event) => {
-                  const next = cursorDate.month(Number(event.target.value));
-                  setCursorDate(next);
-                  setSelectedDate(next);
-                }}
-              >
-                {MONTH_OPTIONS.map((monthLabel, index) => (
-                  <option key={monthLabel} value={index}>
-                    {monthLabel}
-                  </option>
-                ))}
-              </select>
+              <label className="picker-field">
+                <span>Mes</span>
+                <select
+                  aria-label="Seleccionar mes"
+                  value={cursorDate.month()}
+                  onChange={(event) => {
+                    const next = cursorDate.month(Number(event.target.value));
+                    setCursorDate(next);
+                    setSelectedDate(next);
+                  }}
+                >
+                  {MONTH_OPTIONS.map((monthLabel, index) => (
+                    <option key={monthLabel} value={index}>
+                      {monthLabel}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-              <select
-                aria-label="Seleccionar anio"
-                value={cursorDate.year()}
-                onChange={(event) => {
-                  const next = cursorDate.year(Number(event.target.value));
-                  setCursorDate(next);
-                  setSelectedDate(next);
-                }}
-              >
-                {yearOptions.map((year) => (
-                  <option key={year} value={year}>
-                    {year}
-                  </option>
-                ))}
-              </select>
+              <label className="picker-field">
+                <span>Año</span>
+                <select
+                  aria-label="Seleccionar anio"
+                  value={cursorDate.year()}
+                  onChange={(event) => {
+                    const next = cursorDate.year(Number(event.target.value));
+                    setCursorDate(next);
+                    setSelectedDate(next);
+                  }}
+                >
+                  {yearOptions.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               <button
                 className="btn ghost tiny"
@@ -389,8 +669,87 @@ function App() {
               >
                 {density === "comfortable" ? "Vista compacta" : "Vista amplia"}
               </button>
+
+              <button className="btn ghost tiny" onClick={handleMonthlyExcelExport}>
+                Exportar Excel mensual
+              </button>
             </div>
           </div>
+        )}
+
+        {activeTab === "agenda" && (
+          <section className="quick-settings">
+            <div>
+              <h3>Configuración rápida de alertas</h3>
+              <p>Deja listas tus preferencias para nuevas tareas y recordatorios automáticos.</p>
+            </div>
+
+            <div className="settings-grid">
+              <label>
+                Recordatorio por defecto
+                <select
+                  value={alertPreferences.defaultReminderMinutes}
+                  onChange={(event) =>
+                    setAlertPreferences((current) => ({
+                      ...current,
+                      defaultReminderMinutes: Number(event.target.value),
+                    }))
+                  }
+                >
+                  <option value={0}>Al iniciar</option>
+                  <option value={1}>1 minuto antes</option>
+                  <option value={5}>5 minutos antes</option>
+                  <option value={10}>10 minutos antes</option>
+                  <option value={15}>15 minutos antes</option>
+                  <option value={30}>30 minutos antes</option>
+                  <option value={60}>1 hora antes</option>
+                  <option value={120}>2 horas antes</option>
+                </select>
+              </label>
+
+              <label className="check-item toggle-item">
+                <input
+                  type="checkbox"
+                  checked={alertPreferences.soundEnabled}
+                  onChange={(event) =>
+                    setAlertPreferences((current) => ({
+                      ...current,
+                      soundEnabled: event.target.checked,
+                    }))
+                  }
+                />
+                <span>Sonido en recordatorios</span>
+              </label>
+
+              <label className="check-item toggle-item">
+                <input
+                  type="checkbox"
+                  checked={alertPreferences.vibrationEnabled}
+                  onChange={(event) =>
+                    setAlertPreferences((current) => ({
+                      ...current,
+                      vibrationEnabled: event.target.checked,
+                    }))
+                  }
+                />
+                <span>Vibración compatible</span>
+              </label>
+
+              <label className="check-item toggle-item">
+                <input
+                  type="checkbox"
+                  checked={alertPreferences.notificationsEnabled}
+                  onChange={(event) =>
+                    setAlertPreferences((current) => ({
+                      ...current,
+                      notificationsEnabled: event.target.checked,
+                    }))
+                  }
+                />
+                <span>Notificaciones del navegador</span>
+              </label>
+            </div>
+          </section>
         )}
 
         {activeTab === "agenda" && (
@@ -438,7 +797,60 @@ function App() {
             </select>
           </div>
         )}
+
+        {activeTab === "agenda" && (
+          <div className="toolbar-footer">
+            <button className="btn ghost tiny" onClick={() => setShowTrash((current) => !current)}>
+              {showTrash ? `Ocultar papelera (${trashedTasks.length})` : `Ver papelera (${trashedTasks.length})`}
+            </button>
+          </div>
+        )}
       </section>
+
+      {activeTab === "agenda" && showTrash && (
+        <section className="card trash-panel">
+          <header className="trash-panel-header">
+            <div>
+              <h3>Papelera</h3>
+              <p>
+                Tareas eliminadas que puedes restaurar o borrar definitivamente.
+                Se eliminan automáticamente después de {TRASH_RETENTION_DAYS} días.
+              </p>
+            </div>
+            <span>{trashedTasks.length} tareas</span>
+          </header>
+
+          {!trashedTasks.length ? (
+            <p className="day-focus-empty">No hay tareas en la papelera.</p>
+          ) : (
+            <div className="trash-list">
+              {trashedTasks.map((task) => (
+                <article key={task.id} className="task-item is-trashed">
+                  <div>
+                    <p className="task-title">{task.title}</p>
+                    <p className="task-time">
+                      {dayjs(task.startAt).format("DD MMM HH:mm")} - {dayjs(task.endAt).format("HH:mm")}
+                    </p>
+                    <p className="task-desc">{task.description || "Sin descripcion"}</p>
+                    <p className="task-assignees">
+                      Eliminada el {dayjs(task.deletedAt ?? Date.now()).format("DD MMM YYYY, HH:mm")}
+                    </p>
+                  </div>
+
+                  <div className="task-actions">
+                    <button className="btn tiny" onClick={() => handleTrashRestore(task)}>
+                      Restaurar
+                    </button>
+                    <button className="btn tiny danger" onClick={() => handleTrashPurge(task)}>
+                      Borrar definitivamente
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {activeTab === "agenda" ? (
         <section className="calendar-layout">
@@ -455,17 +867,20 @@ function App() {
             </div>
 
             <div className="mini-days">
+              {Array.from({ length: miniLeadingBlanks }, (_, index) => (
+                <span key={`mini-blank-${index}`} className="mini-day-placeholder" aria-hidden="true" />
+              ))}
+
               {miniDays.map((day) => {
                 const key = day.format("YYYY-MM-DD");
                 const count = taskCountByDate[key] ?? 0;
                 const isSelected = day.isSame(selectedDate, "day");
                 const isToday = day.isSame(dayjs(), "day");
-                const isOutsideMonth = !day.isSame(cursorDate, "month");
 
                 return (
                   <button
                     key={key}
-                    className={`mini-day ${isSelected ? "is-selected" : ""} ${isToday ? "is-today" : ""} ${isOutsideMonth ? "is-outside" : ""}`}
+                    className={`mini-day ${isSelected ? "is-selected" : ""} ${isToday ? "is-today" : ""}`}
                     onClick={() => {
                       setSelectedDate(day);
                       setCursorDate(day);
@@ -476,6 +891,14 @@ function App() {
                   </button>
                 );
               })}
+
+              {Array.from({ length: miniTrailingBlanks }, (_, index) => (
+                <span
+                  key={`mini-trailing-blank-${index}`}
+                  className="mini-day-placeholder"
+                  aria-hidden="true"
+                />
+              ))}
             </div>
           </aside>
 
@@ -494,7 +917,7 @@ function App() {
                     setIsFormOpen(true);
                   }}
                   onToggle={toggleTask}
-                  onDelete={removeTask}
+                  onDelete={(taskId) => removeTask(taskId, user.uid)}
                   onMoveToSlot={moveTaskToSlot}
                 />
               ) : (
@@ -511,7 +934,7 @@ function App() {
                     setIsFormOpen(true);
                   }}
                   onToggle={toggleTask}
-                  onDelete={removeTask}
+                  onDelete={(taskId) => removeTask(taskId, user.uid)}
                   onMoveTask={moveTaskToDate}
                 />
               )}
@@ -520,7 +943,7 @@ function App() {
         </section>
       ) : (
         <Suspense fallback={loadingCard}>
-          <ReportsPanel tasks={tasks} users={users} />
+          <ReportsPanel tasks={activeTasks} users={users} />
         </Suspense>
       )}
 
@@ -529,6 +952,7 @@ function App() {
           <TaskForm
             users={users}
             task={selectedTask}
+            defaultReminderMinutes={alertPreferences.defaultReminderMinutes}
             onCancel={() => {
               setSelectedTask(undefined);
               setIsFormOpen(false);

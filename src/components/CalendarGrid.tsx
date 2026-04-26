@@ -20,6 +20,10 @@ interface CalendarGridProps {
 
 const WEEKDAY_LABELS = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"];
 
+function getMondayBasedWeekdayIndex(day: Dayjs) {
+  return (day.day() + 6) % 7;
+}
+
 function getStaggerClass(index: number) {
   return `stagger-${Math.min(index, 20)}`;
 }
@@ -31,11 +35,11 @@ function buildVisibleDays(view: CalendarView, cursorDate: Dayjs) {
 
   if (view === "month") {
     const monthStart = cursorDate.startOf("month");
-    const first = monthStart.startOf("week").add(1, "day");
-    return Array.from({ length: 42 }, (_, index) => first.add(index, "day"));
+    const daysInMonth = monthStart.daysInMonth();
+    return Array.from({ length: daysInMonth }, (_, index) => monthStart.add(index, "day"));
   }
 
-  const start = cursorDate.startOf("week").add(1, "day");
+  const start = cursorDate.startOf("week");
   const length = view === "week" ? 7 : 14;
   return Array.from({ length }, (_, index) => start.add(index, "day"));
 }
@@ -54,6 +58,15 @@ export function CalendarGrid({
   onMoveTask,
 }: CalendarGridProps) {
   const visibleDays = useMemo(() => buildVisibleDays(view, cursorDate), [cursorDate, view]);
+  const monthLeadingBlanks = useMemo(() => {
+    if (view !== "month") return 0;
+    return getMondayBasedWeekdayIndex(cursorDate.startOf("month"));
+  }, [cursorDate, view]);
+  const monthTrailingBlanks = useMemo(() => {
+    if (view !== "month") return 0;
+    const usedCells = monthLeadingBlanks + visibleDays.length;
+    return (7 - (usedCells % 7)) % 7;
+  }, [monthLeadingBlanks, view, visibleDays.length]);
 
   const tasksByDate = useMemo(() => {
     return tasks.reduce<Record<string, TaskItem[]>>((acc, task) => {
@@ -89,6 +102,11 @@ export function CalendarGrid({
               </p>
             ))}
 
+          {view === "month" &&
+            Array.from({ length: monthLeadingBlanks }, (_, index) => (
+              <div key={`month-blank-${index}`} className="calendar-cell-placeholder" aria-hidden="true" />
+            ))}
+
           {visibleDays.map((day, index) => {
             const key = day.format("YYYY-MM-DD");
             const dayTasks = tasksByDate[key] ?? [];
@@ -96,12 +114,11 @@ export function CalendarGrid({
             const completed = dayTasks.length - pending;
             const isToday = day.isSame(dayjs(), "day");
             const isSelected = day.isSame(selectedDate, "day");
-            const isOutsideMonth = view === "month" && !day.isSame(cursorDate, "month");
             return (
               <button
                 type="button"
                 key={key}
-                className={`calendar-cell ${getStaggerClass(index)} ${isToday ? "is-today" : ""} ${isSelected ? "is-selected" : ""} ${isOutsideMonth ? "is-outside" : ""}`}
+                className={`calendar-cell ${getStaggerClass(index)} ${isToday ? "is-today" : ""} ${isSelected ? "is-selected" : ""}`}
                 onClick={() => onSelectDate(day)}
               >
                 <div className="calendar-cell-head">
@@ -143,6 +160,15 @@ export function CalendarGrid({
               </button>
             );
           })}
+
+          {view === "month" &&
+            Array.from({ length: monthTrailingBlanks }, (_, index) => (
+              <div
+                key={`month-trailing-blank-${index}`}
+                className="calendar-cell-placeholder"
+                aria-hidden="true"
+              />
+            ))}
         </div>
       </section>
 

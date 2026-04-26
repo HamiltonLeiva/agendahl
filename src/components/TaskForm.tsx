@@ -11,6 +11,7 @@ const schema = z.object({
   date: z.string().min(1, "La fecha es obligatoria"),
   time: z.string().min(1, "La hora es obligatoria"),
   durationMinutes: z.coerce.number().min(5, "Minimo 5 minutos").max(480, "Maximo 8 horas"),
+  reminderMinutes: z.array(z.coerce.number().min(0)).min(1, "Selecciona al menos una alerta").max(8, "Maximo 8 alertas"),
   assigneeIds: z.array(z.string()).min(1, "Selecciona al menos un responsable"),
 });
 
@@ -20,11 +21,20 @@ type FormValues = z.output<typeof schema>;
 interface TaskFormProps {
   users: AppUser[];
   task?: TaskItem;
+  defaultReminderMinutes: number;
   onCancel: () => void;
   onSubmitTask: (draft: TaskDraft) => Promise<void>;
 }
 
-export function TaskForm({ users, task, onCancel, onSubmitTask }: TaskFormProps) {
+export function TaskForm({
+  users,
+  task,
+  defaultReminderMinutes,
+  onCancel,
+  onSubmitTask,
+}: TaskFormProps) {
+  const reminderOptions = [0, 1, 5, 10, 15, 30, 60, 120, 180];
+
   const defaultValues = useMemo<FormData>(() => {
     if (!task) {
       const rounded = dayjs().add(1, "hour").minute(0);
@@ -35,6 +45,7 @@ export function TaskForm({ users, task, onCancel, onSubmitTask }: TaskFormProps)
         date: rounded.format("YYYY-MM-DD"),
         time: rounded.format("HH:mm"),
         durationMinutes: 30,
+        reminderMinutes: [defaultReminderMinutes],
         assigneeIds: [],
       };
     }
@@ -48,9 +59,12 @@ export function TaskForm({ users, task, onCancel, onSubmitTask }: TaskFormProps)
       date: start.format("YYYY-MM-DD"),
       time: start.format("HH:mm"),
       durationMinutes: Math.max(5, end.diff(start, "minute")),
+      reminderMinutes: Array.isArray(task.reminderMinutes)
+        ? task.reminderMinutes
+        : [Math.max(0, task.reminderMinutes ?? 5)],
       assigneeIds: task.assigneeIds,
     };
-  }, [task]);
+  }, [defaultReminderMinutes, task]);
 
   const {
     register,
@@ -73,6 +87,7 @@ export function TaskForm({ users, task, onCancel, onSubmitTask }: TaskFormProps)
       description: values.description,
       startAt: startAt.toISOString(),
       endAt: endAt.toISOString(),
+      reminderMinutes: Array.from(new Set(values.reminderMinutes)).sort((left, right) => right - left),
       assigneeIds: values.assigneeIds,
     });
   });
@@ -111,6 +126,29 @@ export function TaskForm({ users, task, onCancel, onSubmitTask }: TaskFormProps)
           Duracion (minutos)
           <input type="number" step={5} min={5} max={480} {...register("durationMinutes")} />
           {errors.durationMinutes && <span className="field-error">{errors.durationMinutes.message}</span>}
+        </label>
+
+        <label>
+          Alertas antes de iniciar (puedes marcar varias)
+          <div className="reminder-grid">
+            {reminderOptions.map((minutes) => (
+              <label key={minutes} className="check-item reminder-chip">
+                <input type="checkbox" value={minutes} {...register("reminderMinutes")} />
+                <span>
+                  {minutes === 0
+                    ? "Al iniciar"
+                    : minutes === 60
+                      ? "1 hora antes"
+                      : minutes === 120
+                        ? "2 horas antes"
+                        : minutes === 180
+                          ? "3 horas antes"
+                          : `${minutes} minutos antes`}
+                </span>
+              </label>
+            ))}
+          </div>
+          {errors.reminderMinutes && <span className="field-error">{errors.reminderMinutes.message}</span>}
         </label>
 
         <fieldset>

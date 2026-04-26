@@ -13,6 +13,21 @@ import {
 import { db } from "../lib/firebase";
 import { TaskDraft, TaskItem } from "../types/models";
 
+function normalizeReminderMinutes(value: unknown) {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((entry) => Math.max(0, Number(entry)))
+          .filter((entry) => Number.isFinite(entry)),
+      ),
+    ).sort((left, right) => right - left);
+  }
+
+  const legacyValue = Math.max(0, Number(value ?? 5));
+  return [legacyValue];
+}
+
 export function useTasks(userId: string | null) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -42,6 +57,7 @@ export function useTasks(userId: string | null) {
             description: String(data.description ?? ""),
             startAt: String(data.startAt),
             endAt: String(data.endAt),
+            reminderMinutes: normalizeReminderMinutes(data.reminderMinutes),
             status: data.status === "completed" ? "completed" : "pending",
             assigneeIds: Array.isArray(data.assigneeIds)
               ? data.assigneeIds.map((id) => String(id))
@@ -49,6 +65,8 @@ export function useTasks(userId: string | null) {
             createdBy: String(data.createdBy ?? "unknown"),
             createdAt: Number(data.createdAt ?? Date.now()),
             updatedAt: Number(data.updatedAt ?? Date.now()),
+            deletedAt: data.deletedAt ? Number(data.deletedAt) : null,
+            deletedBy: data.deletedBy ? String(data.deletedBy) : null,
             completedAt: data.completedAt ? Number(data.completedAt) : undefined,
           } as TaskItem;
         });
@@ -102,7 +120,23 @@ export function useTasks(userId: string | null) {
     });
   }
 
-  async function removeTask(taskId: string) {
+  async function removeTask(taskId: string, removedBy?: string) {
+    await updateDoc(doc(db, "tasks", taskId), {
+      deletedAt: Date.now(),
+      deletedBy: removedBy ?? null,
+      updatedAt: Date.now(),
+    });
+  }
+
+  async function restoreTask(taskId: string) {
+    await updateDoc(doc(db, "tasks", taskId), {
+      deletedAt: null,
+      deletedBy: null,
+      updatedAt: Date.now(),
+    });
+  }
+
+  async function purgeTask(taskId: string) {
     await deleteDoc(doc(db, "tasks", taskId));
   }
 
@@ -114,5 +148,7 @@ export function useTasks(userId: string | null) {
     updateTask,
     toggleTask,
     removeTask,
+    restoreTask,
+    purgeTask,
   };
 }
